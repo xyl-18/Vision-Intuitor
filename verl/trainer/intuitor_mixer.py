@@ -20,8 +20,9 @@ import torch
 
 def inject_outcome_scores_at_eos(response_mask: torch.Tensor, outcome_scores: torch.Tensor) -> torch.Tensor:
     """Convert per-response scalar scores into token-level scores at EOS positions."""
-    token_scores = torch.zeros_like(response_mask, dtype=torch.float32)
-    eos_idx = torch.clamp(response_mask.sum(dim=-1).long() - 1, min=0)
+    outcome_scores = outcome_scores.to(response_mask.device)
+    eos_idx = response_mask.long().sum(dim=-1).sub(1).clamp_min(0)
+    token_scores = torch.zeros(response_mask.shape, dtype=outcome_scores.dtype, device=response_mask.device)
     token_scores.scatter_(-1, eos_idx.unsqueeze(-1), outcome_scores.unsqueeze(-1))
     return token_scores
 

@@ -12,7 +12,7 @@ data:
   rollout_batch_size: 128
   mini_rollout_batch_size: null
   val_batch_size: 256
-  format_prompt: ./vision_intuitor_lora/format_prompt/think_answer.jinja
+  format_prompt: ./vision_sr1_lora/format_prompt/see_think.jinja
   override_chat_template: null
   shuffle: true
   seed: 1
@@ -27,11 +27,11 @@ algorithm:
   intuitor_aux_external_weight: 0.0
   intuitor_aux_length_weight: 0.0
   intuitor_aux_external_reward_key: accuracy
-  intuitor_window_enabled: false
-  intuitor_window_size: 16
-  intuitor_window_stride: 8
-  intuitor_window_strategy: min
-  intuitor_window_bottom_p: 0.25
+  intuitor_sr1_second_internal_weight: 1.0
+  intuitor_sr1_second_format_weight: 0.1
+  intuitor_sr1_second_external_weight: 1.0
+  intuitor_sr1_second_length_weight: 0.0
+  intuitor_sr1_second_external_reward_key: description_accuracy
   disable_kl: false
   use_kl_loss: true
   kl_penalty: low_var_kl
@@ -98,17 +98,17 @@ worker:
       offload_params: false
 
   reward:
-    reward_function: ./vision_intuitor_lora/reward_function/accuracy_with_format_reward.py:compute_score
+    reward_function: ./vision_intuitor_sr1_lora/reward_function/self_reward.py:compute_score
     reward_function_kwargs:
-      accuracy_weight: 0.9
       format_weight: 0.1
-      length_weight: 0.0
+      description_accuracy_weight: 1.0
+      description_format_weight: 0.0
 
 trainer:
   total_epochs: 1
   max_steps: null
-  project_name: vision_intuitor_lora
-  experiment_name: qwen2_5_vl_7b_intuitor_lora
+  project_name: vision_intuitor_sr1_lora
+  experiment_name: qwen2_5_vl_7b_intuitor_sr1_lora
   logger: ["console", "wandb"]
   nnodes: 1
   n_gpus_per_node: 8
@@ -120,6 +120,6 @@ trainer:
   save_freq: 15
   save_limit: -1
   save_model_only: false
-  save_checkpoint_path: ./saves/intuitor_lora
+  save_checkpoint_path: ./saves/intuitor_sr1_lora
   load_checkpoint_path: null
   find_last_checkpoint: true

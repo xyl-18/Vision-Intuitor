@@ -80,6 +80,28 @@ class AlgorithmConfig:
     """length penalty weight in final intuitor advantage combination"""
     intuitor_aux_external_reward_key: str = "accuracy"
     """reward metric key used as external signal, e.g. `overall`, `accuracy`, `description_accuracy`"""
+    intuitor_window_enabled: bool = False
+    """enable sliding-window pooling for internal intuitor reward"""
+    intuitor_window_size: int = 16
+    """sliding window size over response tokens"""
+    intuitor_window_stride: int = 8
+    """sliding window stride over response tokens"""
+    intuitor_window_strategy: str = "min"
+    """window selection strategy, support `min` and `bottom_p_mean`"""
+    intuitor_window_bottom_p: float = 0.25
+    """bottom-p ratio used when intuitor_window_strategy is `bottom_p_mean`"""
+    intuitor_window_top_p: Optional[float] = None
+    """deprecated alias for intuitor_window_bottom_p; kept for backward compatibility"""
+    intuitor_sr1_second_internal_weight: float = 0.0
+    """second-hop internal intuitor reward weight"""
+    intuitor_sr1_second_format_weight: float = 0.0
+    """second-hop format reward weight"""
+    intuitor_sr1_second_external_weight: float = 0.0
+    """second-hop external reward weight"""
+    intuitor_sr1_second_length_weight: float = 0.0
+    """second-hop length penalty weight"""
+    intuitor_sr1_second_external_reward_key: str = "description_accuracy"
+    """second-hop external reward key, e.g. `description_accuracy`, `overall`"""
     disable_kl: bool = False
     """disable reference model"""
     use_kl_loss: bool = False
@@ -110,6 +132,32 @@ class AlgorithmConfig:
                 f"Unknown intuitor_reward_method: {self.intuitor_reward_method}. "
                 f"Expected one of {sorted(valid_methods)}."
             )
+
+        for key, value in {
+            "intuitor_aux_format_weight": self.intuitor_aux_format_weight,
+            "intuitor_aux_external_weight": self.intuitor_aux_external_weight,
+            "intuitor_aux_length_weight": self.intuitor_aux_length_weight,
+            "intuitor_sr1_second_internal_weight": self.intuitor_sr1_second_internal_weight,
+            "intuitor_sr1_second_format_weight": self.intuitor_sr1_second_format_weight,
+            "intuitor_sr1_second_external_weight": self.intuitor_sr1_second_external_weight,
+            "intuitor_sr1_second_length_weight": self.intuitor_sr1_second_length_weight,
+        }.items():
+            if value < 0.0:
+                raise ValueError(f"{key} must be non-negative, got {value}")
+
+        if self.intuitor_window_size <= 0:
+            raise ValueError(f"intuitor_window_size must be > 0, got {self.intuitor_window_size}")
+        if self.intuitor_window_stride <= 0:
+            raise ValueError(f"intuitor_window_stride must be > 0, got {self.intuitor_window_stride}")
+        if self.intuitor_window_strategy not in {"min", "bottom_p_mean"}:
+            raise ValueError(
+                f"Unknown intuitor_window_strategy: {self.intuitor_window_strategy}. "
+                "Expected one of ['min', 'bottom_p_mean']."
+            )
+        if self.intuitor_window_top_p is not None:
+            self.intuitor_window_bottom_p = self.intuitor_window_top_p
+        if not (0.0 < self.intuitor_window_bottom_p <= 1.0):
+            raise ValueError(f"intuitor_window_bottom_p must be in (0, 1], got {self.intuitor_window_bottom_p}")
 
 
 @dataclass

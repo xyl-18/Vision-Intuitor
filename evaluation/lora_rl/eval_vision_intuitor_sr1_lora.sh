@@ -18,7 +18,7 @@ MODEL_PATH="${2:-/root/autodl-tmp/code/Vision-SR1-main/LLaMA-Factory-Cold-Start/
 
 MODEL_NAME="${MODEL_PATH##*/}"
 STEP_NAME="${CHECKPOINT_PATH#/root/autodl-tmp/code/Vision-SR1-main/saves/}"
-SAVE_DIR="./evaluation/responses/vision_intuitor_lora/${MODEL_NAME}/${STEP_NAME}"
+SAVE_DIR="./evaluation/responses/vision_intuitor_sr1_lora/${MODEL_NAME}/${STEP_NAME}"
 
 DATASETS=(
   # "zli12321/mmstar"
@@ -36,31 +36,31 @@ DATASETS=(
   "zli12321/realWorldQA"
 )
 
-# for DS in "${DATASETS[@]}"; do
-#   SHORT_NAME="${DS##*/}"
-#   echo ">>> Evaluating ${SHORT_NAME} with vision_r1 (LoRA)"
+for DS in "${DATASETS[@]}"; do
+  SHORT_NAME="${DS##*/}"
+  echo ">>> Evaluating ${SHORT_NAME} with vision_r1 (LoRA)"
 
-#   python3 -m verl.trainer.main \
-#     config=evaluation/eval_config.yaml \
-#     data.train_files=hiyouga/geometry3k@test \
-#     data.val_files="${DS}@test" \
-#     data.prompt_key=problem \
-#     data.answer_key=answer \
-#     data.image_key=images \
-#     data.format_prompt=./evaluation/format_prompt/cot_format.jinja \
-#     worker.actor.model.model_path="${MODEL_PATH}" \
-#     worker.actor.model.lora.rank=64 \
-#     worker.reward.reward_function=./evaluation/reward_function/eval_accuracy.py:compute_score \
-#     trainer.experiment_name="eval_vision_r1_lora_${SHORT_NAME}" \
-#     trainer.load_checkpoint_path="${CHECKPOINT_PATH}" \
-#     trainer.response_path="${SAVE_DIR}/${SHORT_NAME}.jsonl" \
-#     trainer.n_gpus_per_node=2 \
-#     trainer.val_only=true
+  python3 -m verl.trainer.main \
+    config=evaluation/eval_config.yaml \
+    data.train_files=hiyouga/geometry3k@test \
+    data.val_files="${DS}@test" \
+    data.prompt_key=problem \
+    data.answer_key=answer \
+    data.image_key=images \
+    data.format_prompt=./evaluation/format_prompt/see_think_format.jinja \
+    worker.actor.model.model_path="${MODEL_PATH}" \
+    worker.actor.model.lora.rank=64 \
+    worker.reward.reward_function=./evaluation/reward_function/eval_accuracy.py:compute_score \
+    trainer.experiment_name="eval_vision_r1_lora_${SHORT_NAME}" \
+    trainer.load_checkpoint_path="${CHECKPOINT_PATH}" \
+    trainer.response_path="${SAVE_DIR}/${SHORT_NAME}.jsonl" \
+    trainer.n_gpus_per_node=2 \
+    trainer.val_only=true
 
-#   echo "------------------------------------------------------------"
-# done
+  echo "------------------------------------------------------------"
+done
 
-# echo "All responses saved under: ${SAVE_DIR}/"
+echo "All responses saved under: ${SAVE_DIR}/"
 
 # --- LLM Judge (extract \boxed{} then judge with LLM) ---
 JUDGMENT_DIR="./evaluation/judgments/${SAVE_DIR#./evaluation/responses/}"

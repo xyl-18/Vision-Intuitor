@@ -21,12 +21,14 @@ implement PPO
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from enum import Enum
+import math
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 
+from .intuitor_mixer import inject_outcome_scores_at_eos
 from ..utils import torch_functional as VF
 
 
@@ -279,6 +281,11 @@ def compute_intuitor_outcome_advantage(
     format_weight: float = 0.0,
     external_weight: float = 0.0,
     length_weight: float = 0.0,
+    intuitor_window_enabled: bool = False,
+    intuitor_window_size: int = 16,
+    intuitor_window_stride: int = 8,
+    intuitor_window_strategy: Literal["min", "bottom_p_mean"] = "min",
+    intuitor_window_bottom_p: float = 0.25,
     eps: float = 1e-6,
     **kwargs,
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -287,32 +294,56 @@ def compute_intuitor_outcome_advantage(
     The internal signal is pooled to sentence-level and injected at EOS, then
     GRPO group normalization is applied to obtain token-level advantages.
     """
-    internal_scores = intuitor_internal_token_level_scores
+    internal_scores = intuitor_internal_token_level_scores.detach()
+    score_mask = response_mask.to(internal_scores.dtype)
 
-    mask = response_mask.to(internal_scores.dtype)
-    sentence_wise_mean = VF.masked_mean(internal_scores.detach(), mask=mask, dim=-1)
+    def _pool_internal_scalar(scores: torch.Tensor) -> torch.Tensor:
+        if not intuitor_window_enabled:
+            pooled = VF.masked_mean(scores, mask=score_mask, dim=-1)
+            return torch.nan_to_num(pooled, nan=0.0, posinf=0.0, neginf=0.0)
 
-    lengths = mask.sum(dim=-1).long()
-    eos_idx = torch.clamp(lengths - 1, min=0)
+        lengths = score_mask.sum(dim=-1).long()
+        pooled = torch.zeros(scores.shape[0], dtype=scores.dtype, device=scores.device)
+        for i in range(scores.shape[0]):
+            valid_len = int(lengths[i].item())
+            if valid_len <= 0:
+                pooled[i] = 0.0
+                continue
+            if valid_len < intuitor_window_size:
+                pooled[i] = scores[i, :valid_len].mean()
+                continue
 
-    token_level_rewards = torch.zeros_like(internal_scores)
-    token_level_rewards.scatter_(-1, eos_idx.unsqueeze(-1), sentence_wise_mean.unsqueeze(-1))
+            last_start = valid_len - intuitor_window_size
+            starts = list(range(0, last_start + 1, intuitor_window_stride))
+            if starts[-1] != last_start:
+                starts.append(last_start)
 
-    component_rewards = (
-        (token_level_rewards, intuitor_weight),
+            window_means = torch.stack([scores[i, s : s + intuitor_window_size].mean() for s in starts], dim=0)
+            if intuitor_window_strategy == "min":
+                pooled[i] = window_means.min()
+            else:
+                k = max(1, int(math.ceil(window_means.shape[0] * intuitor_window_bottom_p)))
+                pooled[i] = torch.topk(window_means, k=k, largest=False).values.mean()
+
+        return torch.nan_to_num(pooled, nan=0.0, posinf=0.0, neginf=0.0)
+
+    internal_scalar = _pool_internal_scalar(internal_scores)
+    internal_token_level_scores = inject_outcome_scores_at_eos(response_mask, internal_scalar)
+
+    component_specs: list[tuple[torch.Tensor | None, float]] = [
+        (internal_token_level_scores, intuitor_weight),
         (intuitor_format_token_level_scores, format_weight),
         (intuitor_external_token_level_scores, external_weight),
         (intuitor_length_token_level_scores, length_weight),
-    )
+    ]
 
-    combined_advantages = torch.zeros_like(mask)
-    for component_token_level_rewards, component_weight in component_rewards:
-        if component_token_level_rewards is None or component_weight <= 0.0:
+    combined_advantages = torch.zeros_like(score_mask)
+    for component_token_level_scores, component_weight in component_specs:
+        if component_token_level_scores is None or component_weight <= 0.0:
             continue
-
         component_advantages, _ = compute_grpo_outcome_advantage(
-            token_level_rewards=component_token_level_rewards,
-            response_mask=mask,
+            token_level_rewards=component_token_level_scores,
+            response_mask=score_mask,
             index=index,
             eps=eps,
         )

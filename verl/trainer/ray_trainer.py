@@ -170,6 +170,18 @@ def compute_advantage(data: DataProto, adv_estimator: AdvantageEstimator, gamma:
         adv_inputs["external_weight"] = data.meta_info["external_weight"]
     if "length_weight" in data.meta_info:
         adv_inputs["length_weight"] = data.meta_info["length_weight"]
+    if "intuitor_window_enabled" in data.meta_info:
+        adv_inputs["intuitor_window_enabled"] = data.meta_info["intuitor_window_enabled"]
+    if "intuitor_window_size" in data.meta_info:
+        adv_inputs["intuitor_window_size"] = data.meta_info["intuitor_window_size"]
+    if "intuitor_window_stride" in data.meta_info:
+        adv_inputs["intuitor_window_stride"] = data.meta_info["intuitor_window_stride"]
+    if "intuitor_window_strategy" in data.meta_info:
+        adv_inputs["intuitor_window_strategy"] = data.meta_info["intuitor_window_strategy"]
+    if "intuitor_window_bottom_p" in data.meta_info:
+        adv_inputs["intuitor_window_bottom_p"] = data.meta_info["intuitor_window_bottom_p"]
+    elif "intuitor_window_top_p" in data.meta_info:
+        adv_inputs["intuitor_window_bottom_p"] = data.meta_info["intuitor_window_top_p"]
 
     advantages, returns = compute_advantage_return(adv_estimator, **adv_inputs)
     data.batch["advantages"] = advantages
@@ -766,6 +778,11 @@ class RayPPOTrainer:
                             batch.meta_info["format_weight"] = self.intuitor_aux_mixer.format_weight
                             batch.meta_info["external_weight"] = self.intuitor_aux_mixer.external_weight
                             batch.meta_info["length_weight"] = self.intuitor_aux_mixer.length_weight
+                            batch.meta_info["intuitor_window_enabled"] = self.config.algorithm.intuitor_window_enabled
+                            batch.meta_info["intuitor_window_size"] = self.config.algorithm.intuitor_window_size
+                            batch.meta_info["intuitor_window_stride"] = self.config.algorithm.intuitor_window_stride
+                            batch.meta_info["intuitor_window_strategy"] = self.config.algorithm.intuitor_window_strategy
+                            batch.meta_info["intuitor_window_bottom_p"] = self.config.algorithm.intuitor_window_bottom_p
 
                             component_scores, aux_metrics = self.intuitor_aux_mixer.build_component_token_level_scores(
                                 reward_tensor=reward_tensor,
@@ -806,6 +823,16 @@ class RayPPOTrainer:
                         metrics["algorithm/format_weight"] = batch.meta_info["format_weight"]
                         metrics["algorithm/external_weight"] = batch.meta_info["external_weight"]
                         metrics["algorithm/length_weight"] = batch.meta_info["length_weight"]
+                        metrics["algorithm/intuitor_window_enabled"] = float(batch.meta_info["intuitor_window_enabled"])
+                        metrics["algorithm/intuitor_window_size"] = batch.meta_info["intuitor_window_size"]
+                        metrics["algorithm/intuitor_window_stride"] = batch.meta_info["intuitor_window_stride"]
+                        metrics["algorithm/intuitor_window_bottom_p"] = batch.meta_info["intuitor_window_bottom_p"]
+                        metrics["algorithm/intuitor_window_strategy_is_min"] = float(
+                            batch.meta_info["intuitor_window_strategy"] == "min"
+                        )
+                        metrics["algorithm/intuitor_window_strategy_is_bottom_p_mean"] = float(
+                            batch.meta_info["intuitor_window_strategy"] == "bottom_p_mean"
+                        )
 
                     # compute advantages, executed on the driver process
                     batch = compute_advantage(
