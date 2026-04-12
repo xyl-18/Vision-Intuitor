@@ -643,24 +643,28 @@ class FSDPWorker(Worker):
         data.meta_info["temperature"] = self.config.rollout.temperature
         is_intuitor = self.config.actor.adv_estimator == "intuitor"
         reward_method = getattr(self.config.actor, "intuitor_reward_method", "self_certainty")
-        if is_intuitor and reward_method not in {"self_certainty", "entropy"}:
+        if is_intuitor and reward_method not in {"self_certainty", "entropy", "rlsf"}:
             raise ValueError(f"Unknown intuitor_reward_method: {reward_method}")
 
         # Entropy is always computed for response-entropy monitoring.
         # Internal intuitor signal is selected only by `intuitor_reward_method`.
         calculate_internal_self_certainty = is_intuitor and reward_method == "self_certainty"
+        calculate_internal_rlsf = is_intuitor and reward_method == "rlsf"
         # perform recompute log_prob
         with self.ulysses_sharding_manager:
             data = self.ulysses_sharding_manager.preprocess_data(data)
             if is_intuitor:
-                output, entropys, self_certaintys = self.actor.compute_log_prob(
+                output, entropys, self_certaintys, rlsf_confidence_margins = self.actor.compute_log_prob(
                     data=data,
                     calculate_entropy=True,
                     calculate_self_certainty=calculate_internal_self_certainty,
+                    calculate_rlsf=calculate_internal_rlsf,
                 )
 
                 if reward_method == "self_certainty":
                     internal_scores = self_certaintys
+                elif reward_method == "rlsf":
+                    internal_scores = rlsf_confidence_margins
                 else:
                     internal_scores = -entropys
 
@@ -675,7 +679,7 @@ class FSDPWorker(Worker):
                     meta_info={"temperature": self.config.rollout.temperature},
                 )
             else:
-                output, entropys, _ = self.actor.compute_log_prob(data=data, calculate_entropy=True)
+                output, entropys, _, _ = self.actor.compute_log_prob(data=data, calculate_entropy=True)
                 output = DataProto.from_dict(
                     tensors={"old_log_probs": output, "entropys": entropys},
                     meta_info={"temperature": self.config.rollout.temperature},
@@ -711,7 +715,7 @@ class FSDPWorker(Worker):
         data.meta_info["temperature"] = self.config.rollout.temperature
         with self.ulysses_sharding_manager, adapter_ctx:
             data = self.ulysses_sharding_manager.preprocess_data(data)
-            output, _, _ = self.ref_policy.compute_log_prob(data=data)
+            output, _, _, _ = self.ref_policy.compute_log_prob(data=data)
             output = DataProto.from_dict(tensors={"ref_log_probs": output})
             output = self.ulysses_sharding_manager.postprocess_data(output)
 

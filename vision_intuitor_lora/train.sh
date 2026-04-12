@@ -6,15 +6,18 @@ export PYTHONUNBUFFERED=1
 
 MODEL_PATH=${1:-/root/autodl-tmp/code/Vision-SR1-main/LLaMA-Factory-Cold-Start/saves/sft_models/Vision-SR1-Cold-Start/checkpoint-1500-for-rl}
 AUX_FORMAT_WEIGHT=${AUX_FORMAT_WEIGHT:-0.1}
-AUX_EXTERNAL_WEIGHT=${AUX_EXTERNAL_WEIGHT:-0.6}
-AUX_LENGTH_WEIGHT=${AUX_LENGTH_WEIGHT:-0.1}
+AUX_EXTERNAL_WEIGHT=${AUX_EXTERNAL_WEIGHT:-0.0}
+AUX_LENGTH_WEIGHT=${AUX_LENGTH_WEIGHT:-0.0}
 AUX_EXTERNAL_KEY=${AUX_EXTERNAL_KEY:-accuracy}
-INTUITOR_REWARD_METHOD=${INTUITOR_REWARD_METHOD:-self_certainty} # supported methods: self_certainty, entropy
+INTUITOR_REWARD_METHOD=${INTUITOR_REWARD_METHOD:-rlsf} # supported methods: self_certainty, entropy, rlsf
 INTUITOR_WINDOW_ENABLED=${INTUITOR_WINDOW_ENABLED:-false}
-WINDOW_SIZE=${WINDOW_SIZE:-10}
-WINDOW_STRIDE=${WINDOW_STRIDE:-5}
+WINDOW_SIZE=${WINDOW_SIZE:-32}
+WINDOW_STRIDE=${WINDOW_STRIDE:-4}
 SELECT_WINDOW_STRATEGY=${SELECT_WINDOW_STRATEGY:-bottom_p_mean} # supported: min, bottom_p_mean
 WINDOW_BOTTOM_P=${WINDOW_BOTTOM_P:-0.1}
+INTUITOR_GLOBAL_WEIGHT=${INTUITOR_GLOBAL_WEIGHT:-1.0}
+INTUITOR_WINDOW_WEIGHT=${INTUITOR_WINDOW_WEIGHT:-0.0}
+INTUITOR_INTERNAL_WEIGHT_NORMALIZE=${INTUITOR_INTERNAL_WEIGHT_NORMALIZE:-true}
 
 python3 -m vision_intuitor_lora.main \
     config=vision_intuitor_lora/config.yaml \
@@ -37,9 +40,12 @@ python3 -m vision_intuitor_lora.main \
     algorithm.intuitor_window_stride=${WINDOW_STRIDE} \
     algorithm.intuitor_window_strategy=${SELECT_WINDOW_STRATEGY} \
     algorithm.intuitor_window_bottom_p=${WINDOW_BOTTOM_P} \
+    algorithm.intuitor_global_weight=${INTUITOR_GLOBAL_WEIGHT} \
+    algorithm.intuitor_window_weight=${INTUITOR_WINDOW_WEIGHT} \
+    algorithm.intuitor_internal_weight_normalize=${INTUITOR_INTERNAL_WEIGHT_NORMALIZE} \
     trainer.total_epochs=1 \
-    trainer.experiment_name=v3.3_qwen2_5_vl_3b_visionIntuitor_lora \
-    trainer.save_checkpoint_path=./saves/v3.3_3b_intuitor_lora \
+    trainer.experiment_name=v1.5_qwen2_5_vl_3b_visionIntuitor_lora \
+    trainer.save_checkpoint_path=./saves/v1.5_3b_intuitor_lora \
     trainer.n_gpus_per_node=2 \
     trainer.val_before_train=true \
     trainer.val_only=false

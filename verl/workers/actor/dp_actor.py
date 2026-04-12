@@ -73,7 +73,8 @@ class DataParallelPPOActor(BasePPOActor):
         temperature: float,
         calculate_entropy: bool = False,
         calculate_self_certainty: bool = False,
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+        calculate_rlsf: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None, torch.Tensor | None]:
         """
         Returns:
             log_probs: # (bs, response_len)
@@ -139,10 +140,13 @@ class DataParallelPPOActor(BasePPOActor):
 
             entropy = None
             self_certainty = None
+            rlsf_confidence_margin = None
             if calculate_self_certainty:
                 self_certainty_rmpad = VF.self_certainty_from_logits(logits_rmpad)
             if calculate_entropy:
                 entropy_rmpad = self.entropy_from_logits(logits_rmpad)
+            if calculate_rlsf:
+                rlsf_confidence_margin_rmpad = VF.rlsf_confidence_margin_from_logits(logits_rmpad)
 
             # gather log_prob if sp > 1
             if self.config.ulysses_size > 1:
@@ -151,6 +155,10 @@ class DataParallelPPOActor(BasePPOActor):
                 if calculate_entropy:
                     entropy_rmpad = gather_outputs_and_unpad(
                         entropy_rmpad, gather_dim=0, unpad_dim=0, padding_size=pad_size
+                    )
+                if calculate_rlsf:
+                    rlsf_confidence_margin_rmpad = gather_outputs_and_unpad(
+                        rlsf_confidence_margin_rmpad, gather_dim=0, unpad_dim=0, padding_size=pad_size
                     )
 
             # pad back to (bsz, seqlen)
@@ -174,6 +182,14 @@ class DataParallelPPOActor(BasePPOActor):
                     seqlen=seqlen,
                 )
                 entropy = full_entropy.squeeze(-1)[:, -response_length - 1 : -1]
+            if calculate_rlsf:
+                full_rlsf_confidence_margin = pad_input(
+                    hidden_states=rlsf_confidence_margin_rmpad.unsqueeze(-1),
+                    indices=indices,
+                    batch=batch_size,
+                    seqlen=seqlen,
+                )
+                rlsf_confidence_margin = full_rlsf_confidence_margin.squeeze(-1)[:, -response_length - 1 : -1]
         else:
             output = self.actor_module(
                 input_ids=input_ids,
@@ -188,9 +204,10 @@ class DataParallelPPOActor(BasePPOActor):
             log_probs = self.log_probs_from_logits(logits, responses)  # (bsz, response_length)
             entropy = self.entropy_from_logits(logits) if calculate_entropy else None
             self_certainty = VF.self_certainty_from_logits(logits) if calculate_self_certainty else None
+            rlsf_confidence_margin = VF.rlsf_confidence_margin_from_logits(logits) if calculate_rlsf else None
 
-        if calculate_entropy or calculate_self_certainty:
-            return log_probs, entropy, self_certainty
+        if calculate_entropy or calculate_self_certainty or calculate_rlsf:
+            return log_probs, entropy, self_certainty, rlsf_confidence_margin
 
         return log_probs
 
@@ -214,6 +231,7 @@ class DataParallelPPOActor(BasePPOActor):
         data: DataProto,
         calculate_entropy: bool = False,
         calculate_self_certainty: bool = False,
+        calculate_rlsf: bool = False,
     ):
         """Compute the log probability of the responses given input_ids, attention_mask and position_ids
 
@@ -250,22 +268,26 @@ class DataParallelPPOActor(BasePPOActor):
         log_probs_lst = []
         entropy_lst = []
         self_certainty_lst = []
+        rlsf_confidence_margin_lst = []
         if self.rank == 0:
             micro_batches = tqdm(micro_batches, desc="Compute log probs", position=1)
 
         for micro_batch in micro_batches:
             model_inputs = {**micro_batch.batch, **micro_batch.non_tensor_batch}
-            if calculate_entropy or calculate_self_certainty:
-                log_probs, entropy, self_certainty = self._forward_micro_batch(
+            if calculate_entropy or calculate_self_certainty or calculate_rlsf:
+                log_probs, entropy, self_certainty, rlsf_confidence_margin = self._forward_micro_batch(
                     model_inputs,
                     temperature=temperature,
                     calculate_entropy=calculate_entropy,
                     calculate_self_certainty=calculate_self_certainty,
+                    calculate_rlsf=calculate_rlsf,
                 )
                 if calculate_entropy:
                     entropy_lst.append(entropy)
                 if calculate_self_certainty:
                     self_certainty_lst.append(self_certainty)
+                if calculate_rlsf:
+                    rlsf_confidence_margin_lst.append(rlsf_confidence_margin)
             else:
                 log_probs = self._forward_micro_batch(model_inputs, temperature=temperature)
             log_probs_lst.append(log_probs)
@@ -273,6 +295,7 @@ class DataParallelPPOActor(BasePPOActor):
         log_probs = torch.concat(log_probs_lst, dim=0)
         entropys = torch.concat(entropy_lst, dim=0) if calculate_entropy else None
         self_certainty = torch.concat(self_certainty_lst, dim=0) if calculate_self_certainty else None
+        rlsf_confidence_margin = torch.concat(rlsf_confidence_margin_lst, dim=0) if calculate_rlsf else None
 
         if self.config.dynamic_batching:
             log_probs = restore_dynamic_batch(log_probs, batch_idx_list)
@@ -280,8 +303,10 @@ class DataParallelPPOActor(BasePPOActor):
                 entropys = restore_dynamic_batch(entropys, batch_idx_list)
             if calculate_self_certainty:
                 self_certainty = restore_dynamic_batch(self_certainty, batch_idx_list)
+            if calculate_rlsf:
+                rlsf_confidence_margin = restore_dynamic_batch(rlsf_confidence_margin, batch_idx_list)
 
-        return log_probs, entropys, self_certainty
+        return log_probs, entropys, self_certainty, rlsf_confidence_margin
 
     def update_policy(self, data: DataProto) -> dict[str, Any]:
         self.actor_module.train()

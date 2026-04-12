@@ -286,6 +286,9 @@ def compute_intuitor_outcome_advantage(
     intuitor_window_stride: int = 8,
     intuitor_window_strategy: Literal["min", "bottom_p_mean"] = "min",
     intuitor_window_bottom_p: float = 0.25,
+    intuitor_global_weight: float = 1.0,
+    intuitor_window_weight: float = 0.0,
+    intuitor_internal_weight_normalize: bool = True,
     eps: float = 1e-6,
     **kwargs,
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -297,11 +300,11 @@ def compute_intuitor_outcome_advantage(
     internal_scores = intuitor_internal_token_level_scores.detach()
     score_mask = response_mask.to(internal_scores.dtype)
 
-    def _pool_internal_scalar(scores: torch.Tensor) -> torch.Tensor:
-        if not intuitor_window_enabled:
-            pooled = VF.masked_mean(scores, mask=score_mask, dim=-1)
-            return torch.nan_to_num(pooled, nan=0.0, posinf=0.0, neginf=0.0)
+    def _pool_global_scalar(scores: torch.Tensor) -> torch.Tensor:
+        pooled = VF.masked_mean(scores, mask=score_mask, dim=-1)
+        return torch.nan_to_num(pooled, nan=0.0, posinf=0.0, neginf=0.0)
 
+    def _pool_window_scalar(scores: torch.Tensor) -> torch.Tensor:
         lengths = score_mask.sum(dim=-1).long()
         pooled = torch.zeros(scores.shape[0], dtype=scores.dtype, device=scores.device)
         for i in range(scores.shape[0]):
@@ -326,18 +329,37 @@ def compute_intuitor_outcome_advantage(
                 pooled[i] = torch.topk(window_means, k=k, largest=False).values.mean()
 
         return torch.nan_to_num(pooled, nan=0.0, posinf=0.0, neginf=0.0)
+    internal_component_specs: list[tuple[torch.Tensor | None, float]] = []
+    if intuitor_global_weight > 0.0:
+        global_scalar = _pool_global_scalar(internal_scores)
+        internal_component_specs.append((inject_outcome_scores_at_eos(response_mask, global_scalar), intuitor_global_weight))
+    if intuitor_window_enabled and intuitor_window_weight > 0.0:
+        window_scalar = _pool_window_scalar(internal_scores)
+        internal_component_specs.append((inject_outcome_scores_at_eos(response_mask, window_scalar), intuitor_window_weight))
 
-    internal_scalar = _pool_internal_scalar(internal_scores)
-    internal_token_level_scores = inject_outcome_scores_at_eos(response_mask, internal_scalar)
+    internal_combined_advantages = torch.zeros_like(score_mask)
+    total_internal_weight = sum(weight for _, weight in internal_component_specs)
+    for internal_token_level_scores, internal_branch_weight in internal_component_specs:
+        if internal_token_level_scores is None or internal_branch_weight <= 0.0:
+            continue
+        internal_advantages, _ = compute_grpo_outcome_advantage(
+            token_level_rewards=internal_token_level_scores,
+            response_mask=score_mask,
+            index=index,
+            eps=eps,
+        )
+        effective_weight = internal_branch_weight
+        if intuitor_internal_weight_normalize and total_internal_weight > 0.0:
+            effective_weight = internal_branch_weight / total_internal_weight
+        internal_combined_advantages = internal_combined_advantages + effective_weight * internal_advantages
 
     component_specs: list[tuple[torch.Tensor | None, float]] = [
-        (internal_token_level_scores, intuitor_weight),
         (intuitor_format_token_level_scores, format_weight),
         (intuitor_external_token_level_scores, external_weight),
         (intuitor_length_token_level_scores, length_weight),
     ]
 
-    combined_advantages = torch.zeros_like(score_mask)
+    combined_advantages = intuitor_weight * internal_combined_advantages
     for component_token_level_scores, component_weight in component_specs:
         if component_token_level_scores is None or component_weight <= 0.0:
             continue

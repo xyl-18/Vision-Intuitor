@@ -70,7 +70,7 @@ worker:
     max_num_batched_tokens: 25600
     max_model_len: 25600
     limit_images: 0
-    gpu_memory_utilization: 0.7
+    gpu_memory_utilization: 0.8
     enforce_eager: false
     enable_chunked_prefill: false
     tensor_parallel_size: 1

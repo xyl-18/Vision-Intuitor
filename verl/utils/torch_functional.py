@@ -90,6 +90,13 @@ def entropy_from_logits(logits: torch.Tensor) -> torch.Tensor:
     return torch.logsumexp(logits, dim=-1) - torch.sum(probs * logits, dim=-1)
 
 
+def rlsf_confidence_margin_from_logits(logits: torch.Tensor) -> torch.Tensor:
+    """Compute token-level RLSF confidence margin (top1 prob - top2 prob)."""
+    probs = torch.softmax(logits, dim=-1)
+    top2_probs = torch.topk(probs, k=2, dim=-1).values
+    return top2_probs[..., 0] - top2_probs[..., 1]
+
+
 def masked_var(values: torch.Tensor, mask: torch.Tensor, unbiased: bool = True) -> torch.Tensor:
     """Compute variance of tensor with masked values."""
     mean = masked_mean(values, mask)

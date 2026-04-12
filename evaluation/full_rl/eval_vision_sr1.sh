@@ -24,18 +24,18 @@ MODEL_NAME="${MODEL_PATH##*/}"
 SAVE_DIR="./evaluation/responses/vision_sr1_full/${MODEL_NAME}"
 
 DATASETS=(
-  "zli12321/mmstar"
+  # "zli12321/mmstar"
   "zli12321/mm-vet"
-  "zli12321/MLLM_test"
+  # "zli12321/MLLM_test"
   "zli12321/visnumbench"
   "zli12321/mmmu_pro_10options"
-  "zli12321/mmmu-pro-vision"
+  # "zli12321/mmmu-pro-vision"
   "zli12321/hallusionbench"
   "zli12321/MMMU"
-  "zli12321/MMSI"
+  # "zli12321/MMSI"
   "zli12321/mathverse"
   "zli12321/mathvision"
-  "zli12321/mathvista"
+  # "zli12321/mathvista"
   "zli12321/realWorldQA"
 )
 
@@ -62,7 +62,7 @@ for DS in "${DATASETS[@]}"; do
     worker.reward.reward_function=./evaluation/reward_function/eval_accuracy.py:compute_score \
     trainer.experiment_name="eval_vision_sr1_full_${SHORT_NAME}" \
     trainer.response_path="${SAVE_DIR}/${SHORT_NAME}.jsonl" \
-    trainer.n_gpus_per_node=8 \
+    trainer.n_gpus_per_node=4 \
     trainer.val_only=true \
     ${CKPT_ARGS}
 

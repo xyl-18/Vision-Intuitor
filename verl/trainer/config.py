@@ -71,7 +71,7 @@ class AlgorithmConfig:
     adv_estimator: str = "grpo"
     """advantage estimator, support `gae`, `grpo`, `reinforce_plus_plus`, `remax`, `rloo`, `intuitor`"""
     intuitor_reward_method: str = "self_certainty"
-    """internal intuitor signal, support `self_certainty`, `entropy`"""
+    """internal intuitor signal, support `self_certainty`, `entropy`, `rlsf`"""
     intuitor_aux_format_weight: float = 0.0
     """format reward weight in final intuitor advantage combination"""
     intuitor_aux_external_weight: float = 0.0
@@ -92,6 +92,12 @@ class AlgorithmConfig:
     """bottom-p ratio used when intuitor_window_strategy is `bottom_p_mean`"""
     intuitor_window_top_p: Optional[float] = None
     """deprecated alias for intuitor_window_bottom_p; kept for backward compatibility"""
+    intuitor_global_weight: float = 1.0
+    """global (full-response mean) internal intuitor reward weight"""
+    intuitor_window_weight: float = 0.0
+    """window-pooled internal intuitor reward weight"""
+    intuitor_internal_weight_normalize: bool = True
+    """normalize global/window internal weights to sum to 1 when both are active"""
     intuitor_sr1_second_internal_weight: float = 0.0
     """second-hop internal intuitor reward weight"""
     intuitor_sr1_second_format_weight: float = 0.0
@@ -126,7 +132,7 @@ class AlgorithmConfig:
     """filter out high reward samples if online filtering"""
 
     def post_init(self):
-        valid_methods = {"self_certainty", "entropy"}
+        valid_methods = {"self_certainty", "entropy", "rlsf"}
         if self.intuitor_reward_method not in valid_methods:
             raise ValueError(
                 f"Unknown intuitor_reward_method: {self.intuitor_reward_method}. "
@@ -137,6 +143,8 @@ class AlgorithmConfig:
             "intuitor_aux_format_weight": self.intuitor_aux_format_weight,
             "intuitor_aux_external_weight": self.intuitor_aux_external_weight,
             "intuitor_aux_length_weight": self.intuitor_aux_length_weight,
+            "intuitor_global_weight": self.intuitor_global_weight,
+            "intuitor_window_weight": self.intuitor_window_weight,
             "intuitor_sr1_second_internal_weight": self.intuitor_sr1_second_internal_weight,
             "intuitor_sr1_second_format_weight": self.intuitor_sr1_second_format_weight,
             "intuitor_sr1_second_external_weight": self.intuitor_sr1_second_external_weight,
@@ -144,6 +152,11 @@ class AlgorithmConfig:
         }.items():
             if value < 0.0:
                 raise ValueError(f"{key} must be non-negative, got {value}")
+
+        if self.intuitor_window_weight > 0.0 and not self.intuitor_window_enabled:
+            raise ValueError("intuitor_window_weight > 0 requires intuitor_window_enabled=true")
+        if self.intuitor_global_weight <= 0.0 and self.intuitor_window_weight <= 0.0:
+            raise ValueError("At least one of intuitor_global_weight or intuitor_window_weight must be > 0")
 
         if self.intuitor_window_size <= 0:
             raise ValueError(f"intuitor_window_size must be > 0, got {self.intuitor_window_size}")

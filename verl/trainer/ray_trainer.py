@@ -182,6 +182,12 @@ def compute_advantage(data: DataProto, adv_estimator: AdvantageEstimator, gamma:
         adv_inputs["intuitor_window_bottom_p"] = data.meta_info["intuitor_window_bottom_p"]
     elif "intuitor_window_top_p" in data.meta_info:
         adv_inputs["intuitor_window_bottom_p"] = data.meta_info["intuitor_window_top_p"]
+    if "intuitor_global_weight" in data.meta_info:
+        adv_inputs["intuitor_global_weight"] = data.meta_info["intuitor_global_weight"]
+    if "intuitor_window_weight" in data.meta_info:
+        adv_inputs["intuitor_window_weight"] = data.meta_info["intuitor_window_weight"]
+    if "intuitor_internal_weight_normalize" in data.meta_info:
+        adv_inputs["intuitor_internal_weight_normalize"] = data.meta_info["intuitor_internal_weight_normalize"]
 
     advantages, returns = compute_advantage_return(adv_estimator, **adv_inputs)
     data.batch["advantages"] = advantages
@@ -194,6 +200,33 @@ def _update_score_stats(metrics: dict[str, Any], prefix: str, values: torch.Tens
     metrics[f"{prefix}_mean"] = values.mean().item()
     metrics[f"{prefix}_max"] = values.max().item()
     metrics[f"{prefix}_min"] = values.min().item()
+
+
+def _log_group_std_stats(metrics: dict[str, Any], reward_name: str, group_ids: np.ndarray, values: torch.Tensor) -> None:
+    """Log mean/min/max of group-level std for raw reward values."""
+    values = torch.nan_to_num(values.detach(), nan=0.0, posinf=0.0, neginf=0.0).view(-1)
+    if values.numel() == 0 or len(group_ids) != int(values.numel()):
+        return
+
+    id2vals: dict[Any, list[float]] = defaultdict(list)
+    for uid, val in zip(group_ids, values.cpu().tolist()):
+        id2vals[uid].append(float(val))
+
+    group_stds = []
+    for vals in id2vals.values():
+        if len(vals) < 2:
+            continue
+        std = float(np.std(vals, ddof=0))
+        if np.isfinite(std):
+            group_stds.append(std)
+
+    if not group_stds:
+        return
+
+    prefix = f"reward_std/{reward_name}"
+    metrics[f"{prefix}/group_mean"] = float(np.mean(group_stds))
+    metrics[f"{prefix}/group_min"] = float(np.min(group_stds))
+    metrics[f"{prefix}/group_max"] = float(np.max(group_stds))
 
 
 def _log_intuitor_reward_metrics(
@@ -252,6 +285,74 @@ def _log_intuitor_reward_metrics(
         + batch.meta_info["length_weight"] * length_scores
     )
     _update_score_stats(metrics, "reward_component/intuitor_overall", intuitor_overall_scores)
+
+
+def _log_group_std_diagnostics_for_intuitor(
+    metrics: dict[str, Any],
+    batch: DataProto,
+    reward_metrics: dict[str, list[float]],
+    mixer: IntuitorAuxRewardMixer,
+) -> None:
+    """Log group-level raw reward std diagnostics for intuitor/form/external/length."""
+    group_ids = batch.non_tensor_batch.get("uid", None)
+    if group_ids is None:
+        return
+
+    internal_token_scores = batch.batch.get("intuitor_internal_token_level_scores", None)
+    if internal_token_scores is not None:
+        mask = batch.batch["response_mask"].to(internal_token_scores.dtype)
+        intuitor_scores = VF.masked_mean(internal_token_scores.detach(), mask=mask, dim=-1)
+        _log_group_std_stats(metrics, "intuitor", group_ids, intuitor_scores)
+        _log_group_std_stats(metrics, "intuitor_global", group_ids, intuitor_scores)
+
+        window_enabled = bool(batch.meta_info.get("intuitor_window_enabled", False))
+        window_size = int(batch.meta_info.get("intuitor_window_size", 16))
+        window_stride = int(batch.meta_info.get("intuitor_window_stride", 8))
+        window_strategy = str(batch.meta_info.get("intuitor_window_strategy", "min"))
+        window_bottom_p = float(batch.meta_info.get("intuitor_window_bottom_p", 0.25))
+
+        if window_enabled and window_size > 0 and window_stride > 0:
+            lengths = mask.sum(dim=-1).long()
+            window_scores = torch.zeros(internal_token_scores.shape[0], dtype=internal_token_scores.dtype)
+
+            for i in range(internal_token_scores.shape[0]):
+                valid_len = int(lengths[i].item())
+                if valid_len <= 0:
+                    window_scores[i] = 0.0
+                    continue
+                if valid_len < window_size:
+                    window_scores[i] = internal_token_scores[i, :valid_len].mean()
+                    continue
+
+                last_start = valid_len - window_size
+                starts = list(range(0, last_start + 1, window_stride))
+                if starts[-1] != last_start:
+                    starts.append(last_start)
+
+                window_means = torch.stack(
+                    [internal_token_scores[i, s : s + window_size].mean() for s in starts],
+                    dim=0,
+                )
+                if window_strategy == "min":
+                    window_scores[i] = window_means.min()
+                else:
+                    k = max(1, int(np.ceil(window_means.shape[0] * window_bottom_p)))
+                    window_scores[i] = torch.topk(window_means, k=k, largest=False).values.mean()
+
+            window_scores = torch.nan_to_num(window_scores, nan=0.0, posinf=0.0, neginf=0.0)
+            _log_group_std_stats(metrics, "intuitor_window", group_ids, window_scores)
+
+    if "format" in reward_metrics:
+        format_scores = torch.as_tensor(reward_metrics["format"], dtype=torch.float32)
+        _log_group_std_stats(metrics, "format", group_ids, format_scores)
+
+    if mixer.external_reward_key in reward_metrics:
+        external_scores = torch.as_tensor(reward_metrics[mixer.external_reward_key], dtype=torch.float32)
+        _log_group_std_stats(metrics, "external", group_ids, external_scores)
+
+    if "length" in reward_metrics:
+        length_scores = torch.as_tensor(reward_metrics["length"], dtype=torch.float32)
+        _log_group_std_stats(metrics, "length", group_ids, length_scores)
 
 
 def _log_response_entropy_metrics(metrics: dict[str, Any], batch: DataProto) -> None:
@@ -783,6 +884,11 @@ class RayPPOTrainer:
                             batch.meta_info["intuitor_window_stride"] = self.config.algorithm.intuitor_window_stride
                             batch.meta_info["intuitor_window_strategy"] = self.config.algorithm.intuitor_window_strategy
                             batch.meta_info["intuitor_window_bottom_p"] = self.config.algorithm.intuitor_window_bottom_p
+                            batch.meta_info["intuitor_global_weight"] = self.config.algorithm.intuitor_global_weight
+                            batch.meta_info["intuitor_window_weight"] = self.config.algorithm.intuitor_window_weight
+                            batch.meta_info["intuitor_internal_weight_normalize"] = (
+                                self.config.algorithm.intuitor_internal_weight_normalize
+                            )
 
                             component_scores, aux_metrics = self.intuitor_aux_mixer.build_component_token_level_scores(
                                 reward_tensor=reward_tensor,
@@ -803,6 +909,12 @@ class RayPPOTrainer:
                                 reward_metrics=reward_metrics,
                                 mixer=self.intuitor_aux_mixer,
                             )
+                            _log_group_std_diagnostics_for_intuitor(
+                                metrics=metrics,
+                                batch=batch,
+                                reward_metrics=reward_metrics,
+                                mixer=self.intuitor_aux_mixer,
+                            )
                         else:
                             # Non-Intuitor modes: use external reward directly.
                             batch.batch["token_level_scores"] = reward_tensor
@@ -819,6 +931,12 @@ class RayPPOTrainer:
                         batch.batch["token_level_rewards"] = batch.batch["token_level_scores"]
 
                     if self.config.algorithm.adv_estimator == AdvantageEstimator.INTUITOR:
+                        reward_method = str(self.config.algorithm.intuitor_reward_method)
+                        metrics["algorithm/intuitor_reward_method_is_self_certainty"] = float(
+                            reward_method == "self_certainty"
+                        )
+                        metrics["algorithm/intuitor_reward_method_is_entropy"] = float(reward_method == "entropy")
+                        metrics["algorithm/intuitor_reward_method_is_rlsf"] = float(reward_method == "rlsf")
                         metrics["algorithm/intuitor_weight"] = batch.meta_info["intuitor_weight"]
                         metrics["algorithm/format_weight"] = batch.meta_info["format_weight"]
                         metrics["algorithm/external_weight"] = batch.meta_info["external_weight"]
@@ -827,6 +945,11 @@ class RayPPOTrainer:
                         metrics["algorithm/intuitor_window_size"] = batch.meta_info["intuitor_window_size"]
                         metrics["algorithm/intuitor_window_stride"] = batch.meta_info["intuitor_window_stride"]
                         metrics["algorithm/intuitor_window_bottom_p"] = batch.meta_info["intuitor_window_bottom_p"]
+                        metrics["algorithm/intuitor_global_weight"] = batch.meta_info["intuitor_global_weight"]
+                        metrics["algorithm/intuitor_window_weight"] = batch.meta_info["intuitor_window_weight"]
+                        metrics["algorithm/intuitor_internal_weight_normalize"] = float(
+                            batch.meta_info["intuitor_internal_weight_normalize"]
+                        )
                         metrics["algorithm/intuitor_window_strategy_is_min"] = float(
                             batch.meta_info["intuitor_window_strategy"] == "min"
                         )
