@@ -188,6 +188,14 @@ def compute_advantage(data: DataProto, adv_estimator: AdvantageEstimator, gamma:
         adv_inputs["intuitor_window_weight"] = data.meta_info["intuitor_window_weight"]
     if "intuitor_internal_weight_normalize" in data.meta_info:
         adv_inputs["intuitor_internal_weight_normalize"] = data.meta_info["intuitor_internal_weight_normalize"]
+    if "internal_reward_adaptive" in data.meta_info:
+        adv_inputs["internal_reward_adaptive"] = data.meta_info["internal_reward_adaptive"]
+    if "internal_reward_adaptive_eps" in data.meta_info:
+        adv_inputs["internal_reward_adaptive_eps"] = data.meta_info["internal_reward_adaptive_eps"]
+
+    # Reuse the trainer metrics container so adaptive advantage code can emit
+    # per-batch confidence diagnostics without changing the downstream flow.
+    adv_inputs["adv_metrics"] = data.meta_info.get("adv_metrics")
 
     advantages, returns = compute_advantage_return(adv_estimator, **adv_inputs)
     data.batch["advantages"] = advantages
@@ -868,6 +876,7 @@ class RayPPOTrainer:
                         batch = batch.union(values)
 
                 with timer("adv", timing_raw):
+                    batch.meta_info["adv_metrics"] = metrics
                     if "token_level_scores" not in batch.batch:
                         # get token level scores asynchronously
                         reward_tensor, reward_metrics = ray.get(reward_ref)
@@ -888,6 +897,10 @@ class RayPPOTrainer:
                             batch.meta_info["intuitor_window_weight"] = self.config.algorithm.intuitor_window_weight
                             batch.meta_info["intuitor_internal_weight_normalize"] = (
                                 self.config.algorithm.intuitor_internal_weight_normalize
+                            )
+                            batch.meta_info["internal_reward_adaptive"] = self.config.algorithm.internal_reward_adaptive
+                            batch.meta_info["internal_reward_adaptive_eps"] = (
+                                self.config.algorithm.internal_reward_adaptive_eps
                             )
 
                             component_scores, aux_metrics = self.intuitor_aux_mixer.build_component_token_level_scores(
@@ -950,6 +963,12 @@ class RayPPOTrainer:
                         metrics["algorithm/intuitor_internal_weight_normalize"] = float(
                             batch.meta_info["intuitor_internal_weight_normalize"]
                         )
+                        metrics["algorithm/internal_reward_adaptive"] = float(
+                            batch.meta_info["internal_reward_adaptive"]
+                        )
+                        metrics["algorithm/internal_reward_adaptive_eps"] = batch.meta_info[
+                            "internal_reward_adaptive_eps"
+                        ]
                         metrics["algorithm/intuitor_window_strategy_is_min"] = float(
                             batch.meta_info["intuitor_window_strategy"] == "min"
                         )

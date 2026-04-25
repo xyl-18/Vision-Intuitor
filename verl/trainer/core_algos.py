@@ -289,6 +289,9 @@ def compute_intuitor_outcome_advantage(
     intuitor_global_weight: float = 1.0,
     intuitor_window_weight: float = 0.0,
     intuitor_internal_weight_normalize: bool = True,
+    internal_reward_adaptive: bool = False,
+    internal_reward_adaptive_eps: float = 1e-6,
+    adv_metrics: dict[str, Any] | None = None,
     eps: float = 1e-6,
     **kwargs,
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -329,12 +332,80 @@ def compute_intuitor_outcome_advantage(
                 pooled[i] = torch.topk(window_means, k=k, largest=False).values.mean()
 
         return torch.nan_to_num(pooled, nan=0.0, posinf=0.0, neginf=0.0)
+
+    def _apply_internal_reward_adaptive(internal_scalar: torch.Tensor) -> torch.Tensor:
+        """Adaptive confidence shaping from external accuracy-like signal.
+
+        Activated only when both internal/external branches are enabled and
+        `internal_reward_adaptive` is true.
+        """
+        if (not internal_reward_adaptive) or intuitor_weight <= 0.0 or external_weight <= 0.0:
+            return internal_scalar
+        if intuitor_external_token_level_scores is None:
+            return internal_scalar
+
+        external_outcome_scores = intuitor_external_token_level_scores.detach().sum(dim=-1)
+        acc = (external_outcome_scores > 0.5).to(internal_scalar.dtype)
+
+        if torch.is_tensor(index):
+            index_list = index.detach().cpu().tolist()
+        else:
+            index_list = list(index)
+
+        id2vals = defaultdict(list)
+        bsz = internal_scalar.shape[0]
+        for i in range(bsz):
+            id2vals[index_list[i]].append(internal_scalar[i])
+
+        id2mean = {}
+        for idx in id2vals:
+            vals = torch.stack(id2vals[idx])
+            id2mean[idx] = vals.mean()
+
+        # u_i = (r_i - m_g) / (|m_g| + eps)
+        normalized = torch.zeros_like(internal_scalar)
+        denom_eps = max(float(internal_reward_adaptive_eps), 1e-12)
+        for i in range(bsz):
+            gid = index_list[i]
+            group_mean = id2mean[gid]
+            normalized[i] = (internal_scalar[i] - group_mean) / (group_mean.abs() + denom_eps)
+
+        # p_i = min(max(u_i, 0), c)
+        cap_c = 1.0
+        p = torch.clamp(normalized, min=0.0, max=cap_c)
+
+        # r_i^adapt = p_i (correct), -lambda * p_i (incorrect)
+        wrong_penalty_lambda = 1.0
+        calibrated = torch.where(acc > 0.5, p, -wrong_penalty_lambda * p)
+        calibrated = torch.nan_to_num(calibrated, nan=0.0, posinf=0.0, neginf=0.0)
+
+        if adv_metrics is not None:
+            correct_mask = acc > 0.5
+            incorrect_mask = ~correct_mask
+            raw_scalar = torch.nan_to_num(internal_scalar, nan=0.0, posinf=0.0, neginf=0.0)
+
+            def _record_stats(prefix: str, values: torch.Tensor) -> None:
+                if values.numel() == 0:
+                    return
+                adv_metrics[f"{prefix}_mean"] = values.mean().item()
+                adv_metrics[f"{prefix}_max"] = values.max().item()
+                adv_metrics[f"{prefix}_min"] = values.min().item()
+
+            _record_stats("confidence/correct", raw_scalar[correct_mask])
+            _record_stats("confidence/incorrect", raw_scalar[incorrect_mask])
+            _record_stats("confidence/calibrated_correct", calibrated[correct_mask])
+            _record_stats("confidence/calibrated_incorrect", calibrated[incorrect_mask])
+
+        return calibrated
+
     internal_component_specs: list[tuple[torch.Tensor | None, float]] = []
     if intuitor_global_weight > 0.0:
         global_scalar = _pool_global_scalar(internal_scores)
+        global_scalar = _apply_internal_reward_adaptive(global_scalar)
         internal_component_specs.append((inject_outcome_scores_at_eos(response_mask, global_scalar), intuitor_global_weight))
     if intuitor_window_enabled and intuitor_window_weight > 0.0:
         window_scalar = _pool_window_scalar(internal_scores)
+        window_scalar = _apply_internal_reward_adaptive(window_scalar)
         internal_component_specs.append((inject_outcome_scores_at_eos(response_mask, window_scalar), intuitor_window_weight))
 
     internal_combined_advantages = torch.zeros_like(score_mask)

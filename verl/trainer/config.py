@@ -72,12 +72,18 @@ class AlgorithmConfig:
     """advantage estimator, support `gae`, `grpo`, `reinforce_plus_plus`, `remax`, `rloo`, `intuitor`"""
     intuitor_reward_method: str = "self_certainty"
     """internal intuitor signal, support `self_certainty`, `entropy`, `rlsf`"""
+    intuitor_weight: float = 1.0
+    """weight for internal intuitor reward branch in final advantage combination"""
     intuitor_aux_format_weight: float = 0.0
     """format reward weight in final intuitor advantage combination"""
     intuitor_aux_external_weight: float = 0.0
     """external reward weight in final intuitor advantage combination"""
     intuitor_aux_length_weight: float = 0.0
     """length penalty weight in final intuitor advantage combination"""
+    internal_reward_adaptive: bool = False
+    """enable adaptive confidence shaping for internal reward"""
+    internal_reward_adaptive_eps: float = 1e-6
+    """epsilon for adaptive confidence shaping normalization"""
     intuitor_aux_external_reward_key: str = "accuracy"
     """reward metric key used as external signal, e.g. `overall`, `accuracy`, `description_accuracy`"""
     intuitor_window_enabled: bool = False
@@ -140,6 +146,7 @@ class AlgorithmConfig:
             )
 
         for key, value in {
+            "intuitor_weight": self.intuitor_weight,
             "intuitor_aux_format_weight": self.intuitor_aux_format_weight,
             "intuitor_aux_external_weight": self.intuitor_aux_external_weight,
             "intuitor_aux_length_weight": self.intuitor_aux_length_weight,
@@ -152,6 +159,11 @@ class AlgorithmConfig:
         }.items():
             if value < 0.0:
                 raise ValueError(f"{key} must be non-negative, got {value}")
+
+        if self.internal_reward_adaptive_eps <= 0.0:
+            raise ValueError(
+                f"internal_reward_adaptive_eps must be > 0, got {self.internal_reward_adaptive_eps}"
+            )
 
         if self.intuitor_window_weight > 0.0 and not self.intuitor_window_enabled:
             raise ValueError("intuitor_window_weight > 0 requires intuitor_window_enabled=true")

@@ -36,6 +36,7 @@ class IntuitorAuxRewardMixer:
     positions for GRPO-style group normalization.
     """
 
+    intuitor_weight: float = 1.0
     format_weight: float = 0.1
     external_weight: float = 0.0
     length_weight: float = 0.0
@@ -43,32 +44,26 @@ class IntuitorAuxRewardMixer:
 
     @classmethod
     def from_algorithm_config(cls, algorithm_config: Any) -> "IntuitorAuxRewardMixer":
+        intuitor_weight = float(getattr(algorithm_config, "intuitor_weight", 1.0))
         format_weight = float(getattr(algorithm_config, "intuitor_aux_format_weight", 0.1))
         external_weight = float(getattr(algorithm_config, "intuitor_aux_external_weight", 0.0))
         length_weight = float(getattr(algorithm_config, "intuitor_aux_length_weight", 0.0))
         external_reward_key = str(getattr(algorithm_config, "intuitor_aux_external_reward_key", "accuracy"))
 
-        if format_weight < 0.0 or external_weight < 0.0 or length_weight < 0.0:
+        if intuitor_weight < 0.0 or format_weight < 0.0 or external_weight < 0.0 or length_weight < 0.0:
             raise ValueError(
+                "`intuitor_weight`, "
                 "`intuitor_aux_format_weight`, `intuitor_aux_external_weight`, "
                 "and `intuitor_aux_length_weight` must be >= 0."
             )
-        if format_weight + external_weight + length_weight > 1.0:
-            raise ValueError(
-                "`intuitor_aux_format_weight + intuitor_aux_external_weight + intuitor_aux_length_weight` "
-                "must be <= 1."
-            )
 
         return cls(
+            intuitor_weight=intuitor_weight,
             format_weight=format_weight,
             external_weight=external_weight,
             length_weight=length_weight,
             external_reward_key=external_reward_key,
         )
-
-    @property
-    def intuitor_weight(self) -> float:
-        return max(0.0, 1.0 - self.format_weight - self.external_weight - self.length_weight)
 
     @property
     def enabled(self) -> bool:
